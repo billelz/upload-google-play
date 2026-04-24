@@ -128,8 +128,7 @@ async function uploadToPlayStore(options: EditOptions, releaseFiles: string[]): 
 		
             return res.data.id
         } else {
-            core.setFailed(`Error ${res.status}: ${res.statusText}`);
-            return Promise.reject(res.status);
+            throw new Error(`Google Play edit commit failed (${res.status}): ${res.statusText}`)
         }
     }
 

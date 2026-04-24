@@ -12,6 +12,7 @@ import { unlink, writeFile } from 'fs/promises'
 import pTimeout from 'p-timeout'
 
 export async function run() {
+    let cleanupCredentialsFile = false
     try {
         const serviceAccountJson = core.getInput('serviceAccountJson', { required: false });
         const serviceAccountJsonRaw = core.getInput('serviceAccountJsonPlainText', { required: false});
@@ -39,7 +40,7 @@ export async function run() {
             ?.map(x => parseInt(x))
             ?.filter(x => !Number.isNaN(x));
 
-        await validateServiceAccountJson(serviceAccountJsonRaw, serviceAccountJson)
+        cleanupCredentialsFile = await validateServiceAccountJson(serviceAccountJsonRaw, serviceAccountJson)
 
         // Validate user fraction
         let userFractionFloat: number | undefined
@@ -99,21 +100,22 @@ export async function run() {
             }
         )
     } catch (error: unknown) {
-        if (error instanceof Error) {
-            core.setFailed(error.message)
-        } else {
-            core.setFailed('Unknown error occurred.')
-        }
+        core.setFailed(formatError(error))
     } finally {
-        if (core.getInput('serviceAccountJsonPlainText', { required: false})) {
+        if (cleanupCredentialsFile) {
             // Cleanup our auth file that we created.
             core.debug('Cleaning up service account json file');
-            await unlink('./serviceAccountJson.json');
+            try {
+                await unlink('./serviceAccountJson.json');
+            } catch (cleanupError: unknown) {
+                // Cleanup failure should be visible in debug logs but never hide the upload failure.
+                core.debug(`Failed to cleanup generated service account json file: ${formatError(cleanupError)}`)
+            }
         }
     }
 }
 
-async function validateServiceAccountJson(serviceAccountJsonRaw: string | undefined, serviceAccountJson: string | undefined): Promise<string | undefined> {
+async function validateServiceAccountJson(serviceAccountJsonRaw: string | undefined, serviceAccountJson: string | undefined): Promise<boolean> {
     if (serviceAccountJson && serviceAccountJsonRaw) {
         // If the user provided both, print a warning one will be ignored
         core.warning('Both \'serviceAccountJsonPlainText\' and \'serviceAccountJson\' were provided! \'serviceAccountJson\' will be ignored.')
@@ -126,13 +128,47 @@ async function validateServiceAccountJson(serviceAccountJsonRaw: string | undefi
             encoding: 'utf8'
         });
         core.exportVariable("GOOGLE_APPLICATION_CREDENTIALS", serviceAccountFile)
+        return true
     } else if (serviceAccountJson) {
         // If the user has provided the json path, then set appropriate env variable
         core.exportVariable("GOOGLE_APPLICATION_CREDENTIALS", serviceAccountJson)
+        return false
     } else {
         // If the user provided neither, fail and exit
-        return Promise.reject("You must provide one of 'serviceAccountJsonPlainText' or 'serviceAccountJson' to use this action")
+        return Promise.reject(new Error("You must provide one of 'serviceAccountJsonPlainText' or 'serviceAccountJson' to use this action"))
     }
+}
+
+function formatError(error: unknown): string {
+    if (error instanceof Error) {
+        const maybeResponse = (error as Error & { response?: unknown }).response
+        const maybeResponseData = extractResponseDataMessage(maybeResponse)
+        return maybeResponseData ? `${error.message} (${maybeResponseData})` : error.message
+    }
+
+    if (typeof error === 'string') {
+        return error
+    }
+
+    if (typeof error === 'number' || typeof error === 'boolean' || error === null || error === undefined) {
+        return `Unexpected action error: ${String(error)}`
+    }
+
+    try {
+        return `Unexpected action error: ${JSON.stringify(error)}`
+    } catch {
+        return 'Unknown error occurred.'
+    }
+}
+
+function extractResponseDataMessage(response: unknown): string | undefined {
+    if (!response || typeof response !== 'object') return undefined
+    const maybeData = (response as { data?: unknown }).data
+    if (!maybeData || typeof maybeData !== 'object') return undefined
+    const maybeError = (maybeData as { error?: unknown }).error
+    if (!maybeError || typeof maybeError !== 'object') return undefined
+    const message = (maybeError as { message?: unknown }).message
+    return typeof message === 'string' && message.length > 0 ? message : undefined
 }
 
 void run();
